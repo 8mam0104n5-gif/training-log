@@ -282,8 +282,10 @@ const allM=()=>BUILTIN.concat(S.config.machines||[]);
 const getM=id=>allM().find(m=>m.id===id)||{id,name:"(削除された種目)",area:"",part:"",type:"w"};
 
 function sortSessions(a){return a.slice().sort((x,y)=>(y.date||"").localeCompare(x.date||"")||(y.createdAt||0)-(x.createdAt||0))}
-function lastEntry(mid){for(const s of S.sessions){const e=(s.entries||[]).find(e=>e.mid===mid);if(e)return{...e,date:s.date}}return null}
-function suggested(){const s=S.sessions.find(s=>PKEYS.includes(s.pattern));if(!s)return"A";return PKEYS[(PKEYS.indexOf(s.pattern)+1)%3]}
+const curDate=()=>S.drafts?S.drafts.date:todayStr();
+function lastEntry(mid){for(const s of S.sessions){if(s.date===curDate())continue;const e=(s.entries||[]).find(e=>e.mid===mid);if(e)return{...e,date:s.date}}return null}
+function existingSession(date,p){return S.sessions.find(s=>s.date===date&&s.pattern===p)}
+function suggested(){const s=S.sessions.find(s=>s.date!==curDate()&&PKEYS.includes(s.pattern));if(!s)return"A";return PKEYS[(PKEYS.indexOf(s.pattern)+1)%3]}
 
 /* ---------- storage ---------- */
 let cfgTimer=null,cfgDirtyAt=0,cfgRef=null,col=null;
@@ -316,6 +318,10 @@ const store={
  async addSession(doc){
   if(S.mode==="cloud"){await col.add(doc)}
   else{const list=lsGet("tlog-sessions")||[];list.push({id:rid(),...doc});lsSet("tlog-sessions",list);onSessions(list)}
+ },
+ async updateSession(id,doc){
+  if(S.mode==="cloud"){await col.doc(id).set(doc)}
+  else{const list=(lsGet("tlog-sessions")||[]).map(s=>s.id===id?{id,...doc}:s);lsSet("tlog-sessions",list);onSessions(list)}
  },
  async deleteSession(id){
   if(S.mode==="cloud"){await col.doc(id).delete()}
@@ -428,7 +434,7 @@ function machineOptions(){
 }
 
 function rToday(){
- const p=S.pattern,sug=suggested(),d=getDraft(p),lastS=S.sessions[0];
+ const p=S.pattern,sug=suggested(),d=getDraft(p),lastS=S.sessions.find(s=>s.date!==S.drafts.date);
  let h=`<div class="headrow"><label class="date">日付 <input type="date" id="f-date" value="${esc(S.drafts.date)}"></label>
  <p class="hint">${lastS?`前回 ${fmtD(lastS.date)} ${PKEYS.includes(lastS.pattern)?lastS.pattern:""}`:"最初の記録をつけましょう"}</p></div>
  <div class="plates">${PKEYS.map(k=>`<button class="plate" data-act="pat" data-p="${k}" aria-pressed="${k===p}">${k===sug?'<span class="rec">次はこれ</span>':""}<span class="ltr">${k}</span><span class="nm">${esc(S.config.patterns[k].name)}</span></button>`).join("")}</div>`;
@@ -456,7 +462,8 @@ function rToday(){
  });
  h+=`<div class="addrow"><select id="f-addex" aria-label="追加する種目">${machineOptions()}</select><button class="btn" data-act="addex">種目を追加</button></div>
  <label class="lbl">メモ(体調・気づきなど)<textarea id="f-note" placeholder="例:レッグプレスのシート位置を1つ前に">${esc(d.note)}</textarea></label>
- <button class="primary" data-act="save">この内容で記録を保存</button>
+ <button class="primary" data-act="save">${existingSession(S.drafts.date,p)?"記録を更新して保存":"この内容で記録を保存"}</button>
+ <p class="small" style="text-align:center">種目が終わるたびに押せます。同じ日の同じパターンは上書きされます。</p>
  <button class="linkbtn" data-act="redraft">入力を消してメニューから作り直す</button>`;
  if(S.confirm==="redraft")h+=`<div class="confirm">今日の${p}の入力をすべて消しますか?<button class="btn danger" data-act="do-redraft">消す</button><button class="btn" data-act="cancel">やめる</button></div>`;
  return h;
@@ -699,9 +706,13 @@ async function saveSession(){
   const sets=e.sets.filter(s=>filled(m.type,s)).map(s=>{const o={};const a=parseFloat(s.a),bb=parseFloat(s.b);if(!isNaN(a))o.a=a;if(!isNaN(bb))o.b=bb;return o});
   return{mid:e.mid,name:m.name,type:m.type,sets}}).filter(e=>e.sets.length);
  if(!entries.length){toast("回数(または秒数)を1セット以上入力してください");return}
- const doc={date:S.drafts.date||todayStr(),pattern:p,patternName:S.config.patterns[p].name,entries,note:d.note||"",createdAt:Date.now()};
+ const date=S.drafts.date||todayStr(),prev=existingSession(date,p);
+ const doc={date,pattern:p,patternName:S.config.patterns[p].name,entries,note:d.note||"",createdAt:prev?prev.createdAt||Date.now():Date.now()};
  saving=true;
- try{await store.addSession(doc);delete S.drafts[p];saveDrafts();S.tab="history";S.chartM=null;render();window.scrollTo(0,0);toast(`${fmtD(doc.date)}の記録を保存しました`)}
+ try{
+  if(prev)await store.updateSession(prev.id,doc);else await store.addSession(doc);
+  render(true);toast(`${fmtD(doc.date)}の記録を${prev?"更新":"保存"}しました`);
+ }
  catch(e){toast("保存できませんでした。通信状態を確認してもう一度押してください")}
  saving=false;
 }
